@@ -41,6 +41,7 @@ typedef struct shimaore_unicast_context_s {
 
     uint32_t buncher_position;
     uint32_t buncher_frame_count;
+    uint32_t buncher_maximum;
     /* recommended buffer size is 8192, way below the default 64k MTU on Linux loopback interface */
     uint8_t buncher_buffer[2*SWITCH_RECOMMENDED_BUFFER_SIZE];
 } shimaore_context_t;
@@ -114,7 +115,7 @@ static switch_bool_t shimaore_unicast_bug_callback(switch_media_bug_t *bug, void
                 // switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(switch_core_media_bug_get_session(bug)), SWITCH_LOG_INFO, "bug: got frame %d\n", read_frame.datalen);
 
                 /* If we have less that the recommended size left or we already processed the proper number of frames, send out and reset. */
-                if (context->buncher_position >= SWITCH_RECOMMENDED_BUFFER_SIZE || context->buncher_frame_count >= BUNCHER_MAXIMUM_PACKET_COUNT) {
+                if (context->buncher_position >= SWITCH_RECOMMENDED_BUFFER_SIZE || context->buncher_frame_count >= context->buncher_maximum) {
                       switch_size_t len = 0;
                       len = context->buncher_position;
 
@@ -199,10 +200,6 @@ SWITCH_STANDARD_API(shimaore_unicast_api_function)
         goto usage;
     }
 
-    if (argc < 3) {
-        goto usage;
-    }
-
     {
         switch_media_bug_t *bug;
 
@@ -213,18 +210,67 @@ SWITCH_STANDARD_API(shimaore_unicast_api_function)
         }
     }
 
+    if (argc < 3) {
+        goto usage;
+    }
+
     context = (shimaore_context_t *) switch_core_session_alloc(rsession, sizeof(*context));
     assert(context != NULL);
     context->buncher_position = 0;
     context->buncher_frame_count = 0;
+    context->buncher_maximum = BUNCHER_MAXIMUM_PACKET_COUNT;
+
+    char localhost[] = "127.0.0.1";
+    char *local_ip = localhost;
+    char *remote_ip = localhost;
+    int local_port = 5876;
+    int remote_port = 0;
+
+    for (uint i = 0; i < argc; i++) {
+        char *key = argv[i];
+        char *sign = strchr(argv[i],'=');
+        *sign = '\0';
+        if (sign == NULL) {
+            goto usage;
+        }
+        char *value = sign+1;
+        if (*value == '\0') {
+            goto usage;
+        }
+        if (!strcmp(key,"remote_ip")) {
+            remote_ip = value;
+            continue;
+        }
+        if (!strcmp(key,"remote_port")) {
+            remote_port = atoi(value);
+            continue;
+        }
+        if (!strcmp(key,"local_ip")) {
+            local_ip = value;
+            continue;
+        }
+        if (!strcmp(key,"local_port")) {
+            remote_port = atoi(value);
+            continue;
+        }
+        if (!strcmp(key,"frames_per_packet")) {
+            context->buncher_maximum = atoi(value);
+        }
+        goto usage;
+    }
+
+    if (remote_port <= 0) {
+        goto usage;
+    }
+    if (local_port <= 0) {
+        goto usage;
+    }
+    if (context->buncher_maximum <= 0 || context->buncher_maximum > BUNCHER_MAXIMUM_PACKET_COUNT) {
+        goto usage;
+    }
 
     /** Create socket */
     {
-        char local_ip[] = "127.0.0.1";
-        char remote_ip[] = "127.0.0.1";
-        int local_port = 5876;
-        int remote_port = atoi(argv[2]);
-
         switch_sockaddr_t *local_addr;
         switch_sockaddr_t *remote_addr;
 
@@ -319,7 +365,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_shimaore_load)
 
     SWITCH_ADD_API(api_interface, "shimaore_unicast", "unicast bug", shimaore_unicast_api_function, SHIMAORE_UNICAST_API_SYNTAX);
 
-    switch_console_set_complete("add shimaore_unicast ::console::list_uuid ::[start:stop] remote_port");
+    switch_console_set_complete("add shimaore_unicast ::console::list_uuid ::[start:stop] [remote_port=<port>] [remote_ip=<ip>] [local_ip=<ip>] [local_port=<port>] [frames_per_packet=<count>]");
 
     /* indicate that the module should continue to be loaded */
     return SWITCH_STATUS_SUCCESS;
@@ -341,4 +387,3 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_shimaore_shutdown)
 * For VIM:
 * vim:set softtabstop=4 shiftwidth=4 tabstop=4 noet:
 */
-
