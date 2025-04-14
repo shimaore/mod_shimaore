@@ -136,7 +136,7 @@ static switch_bool_t shimaore_unicast_bug_callback(switch_media_bug_t *bug, void
 }
 
 /* API Interface Function */
-#define SHIMAORE_UNICAST_API_SYNTAX "<uuid> [start|stop] <remote_port>"
+#define SHIMAORE_UNICAST_API_SYNTAX "<uuid> [start|stop] [remote_port=<port>] [remote_ip=<ip>] [local_ip=<ip>] [local_port=<port>] [frames_per_packet=<count>] [rtp_ssrc=<number>]"
 SWITCH_STANDARD_API(shimaore_unicast_api_function)
 {
     switch_core_session_t *rsession = NULL;
@@ -226,10 +226,9 @@ SWITCH_STANDARD_API(shimaore_unicast_api_function)
     int local_port = 5876;
     int remote_port = 0;
 
-    for (uint i = 0; i < argc; i++) {
+    for (uint i = 2; i < argc; i++) {
         char *key = argv[i];
         char *sign = strchr(argv[i],'=');
-        *sign = '\0';
         if (sign == NULL) {
             goto usage;
         }
@@ -237,6 +236,7 @@ SWITCH_STANDARD_API(shimaore_unicast_api_function)
         if (*value == '\0') {
             goto usage;
         }
+        *sign = '\0';
         if (!strcmp(key,"remote_ip")) {
             remote_ip = value;
             continue;
@@ -255,6 +255,7 @@ SWITCH_STANDARD_API(shimaore_unicast_api_function)
         }
         if (!strcmp(key,"frames_per_packet")) {
             context->buncher_maximum = atoi(value);
+            continue;
         }
         goto usage;
     }
@@ -365,7 +366,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_shimaore_load)
 
     SWITCH_ADD_API(api_interface, "shimaore_unicast", "unicast bug", shimaore_unicast_api_function, SHIMAORE_UNICAST_API_SYNTAX);
 
-    switch_console_set_complete("add shimaore_unicast ::console::list_uuid ::[start:stop] [remote_port=<port>] [remote_ip=<ip>] [local_ip=<ip>] [local_port=<port>] [frames_per_packet=<count>]");
+    switch_console_set_complete("add shimaore_unicast ::console::list_uuid ::[starttop] remote_port= remote_ip= local_ip= local_port= frames_per_packet= rtp_ssrc=");
 
     /* indicate that the module should continue to be loaded */
     return SWITCH_STATUS_SUCCESS;
