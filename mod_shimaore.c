@@ -51,12 +51,19 @@ typedef struct shimaore_unicast_context_s {
     uint32_t buncher_maximum;
     /* recommended buffer size is 8192, way below the default 64k MTU on Linux loopback interface */
     uint8_t buncher_buffer[2*SWITCH_RECOMMENDED_BUFFER_SIZE];
-    uint8_t packet_buffer[2*SWITCH_RECOMMENDED_BUFFER_SIZE];
 
     shimaore_framing_t framing;
     uint32_t rtp_ssrc; /* provided by app */
     uint16_t rtp_sequence_number;/* initial value SHOULD be random */
     uint32_t rtp_timestamp; /* initial value SHOULD be random */
+
+    /* Statistics */
+    uint64_t sent_attempted;
+    uint64_t sent_successful;
+
+    /* Private signalling */
+    uint8_t meta[SWITCH_RECOMMENDED_BUFFER_SIZE];
+    uint16_t meta_length;
 } shimaore_context_t;
 
 /* Bunch every ten frames, i.e. every 200ms at 20ms sampling time,
@@ -68,50 +75,130 @@ enum {
 
 char SHIMAORE_UNICAST_BUG[] = "_shimaore_unicast_bug_";
 
+static switch_status_t shimaore_send_start(shimaore_context_t *context) {
+  switch_size_t len = 0;
+  switch_status_t outcome;
+  uint8_t packet_buffer[2*SWITCH_RECOMMENDED_BUFFER_SIZE];
+
+  if (context->meta_length == 0) {
+    return SWITCH_STATUS_FALSE;
+  }
+
+  /* Network byte order */
+  packet_buffer[0] = 2 << 6; /* version 2, no padding, no extension, no CSRC */
+  packet_buffer[1] = 124; /* no marker, dynamic */
+  /* sequence number */
+  packet_buffer[2] = context->rtp_sequence_number >> 8;
+  packet_buffer[3] = context->rtp_sequence_number;
+  /* Timestamp */
+  packet_buffer[4] = context->rtp_timestamp >> 24;
+  packet_buffer[5] = context->rtp_timestamp >> 16;
+  packet_buffer[6] = context->rtp_timestamp >> 8;
+  packet_buffer[7] = context->rtp_timestamp;
+  /* SSRC identifier */
+  packet_buffer[8] = context->rtp_ssrc >> 24;
+  packet_buffer[9] = context->rtp_ssrc >> 16;
+  packet_buffer[10] = context->rtp_ssrc >> 8;
+  packet_buffer[11] = context->rtp_ssrc;
+  /* Payload */
+  memcpy(packet_buffer+12, context->meta, context->meta_length);
+  len = 12+context->meta_length;
+  outcome = switch_socket_send(context->socket, packet_buffer, &len);
+  return outcome;
+}
+
+static switch_status_t shimaore_send_stop(shimaore_context_t *context) {
+  switch_size_t len = 0;
+  switch_status_t outcome;
+
+  if (context->meta_length == 0) {
+    return SWITCH_STATUS_FALSE;
+  }
+
+  uint8_t packet_buffer[2*SWITCH_RECOMMENDED_BUFFER_SIZE];
+  /* L16 per RFC 3511 section 4.5.11 */
+  /* Network byte order */
+  packet_buffer[0] = 2 << 6; /* version 2, no padding, no extension, no CSRC */
+  packet_buffer[1] = 125; /* no marker, dynamic */
+  /* sequence number */
+  packet_buffer[2] = context->rtp_sequence_number >> 8;
+  packet_buffer[3] = context->rtp_sequence_number;
+  /* Timestamp */
+  packet_buffer[4] = context->rtp_timestamp >> 24;
+  packet_buffer[5] = context->rtp_timestamp >> 16;
+  packet_buffer[6] = context->rtp_timestamp >> 8;
+  packet_buffer[7] = context->rtp_timestamp;
+  /* SSRC identifier */
+  packet_buffer[8] = context->rtp_ssrc >> 24;
+  packet_buffer[9] = context->rtp_ssrc >> 16;
+  packet_buffer[10] = context->rtp_ssrc >> 8;
+  packet_buffer[11] = context->rtp_ssrc;
+  /* Payload */
+  len = 12;
+  outcome = switch_socket_send(context->socket, packet_buffer, &len);
+  return outcome;
+}
+
 /*** Unicast ***/
-static void shimaore_send(shimaore_context_t *context) {
-   switch_size_t len = 0;
-   len = context->buncher_position;
+static switch_status_t shimaore_send(shimaore_context_t *context) {
+    switch_size_t len = 0;
+    switch_status_t outcome;
+    len = context->buncher_position;
+    context->rtp_sequence_number++;
 
     switch (context->framing) {
         case SHIMAORE_FRAMING_PLAIN: {
-           /* Explicitly ignore errors */
-           switch_socket_send(context->socket, context->buncher_buffer, &len);
+            /* Explicitly ignore errors */
+            outcome = switch_socket_send(context->socket, context->buncher_buffer, &len);
+            context->sent_attempted++;
+            if (outcome == SWITCH_STATUS_SUCCESS) {
+                context->sent_successful++;
+            }
             break;
         }
         case SHIMAORE_FRAMING_RTP_L16: {
+            uint8_t packet_buffer[2*SWITCH_RECOMMENDED_BUFFER_SIZE];
             /* L16 per RFC 3511 section 4.5.11 */
             /* Network byte order */
-            context->packet_buffer[0] = 2 << 6; /* version 2, no padding, no extension, no CSRC */
-            context->packet_buffer[1] = 96; /* no marker, dynamic */
+            packet_buffer[0] = 2 << 6; /* version 2, no padding, no extension, no CSRC */
+            packet_buffer[1] = 96; /* no marker, dynamic */
             /* sequence number */
-            context->packet_buffer[2] = context->rtp_sequence_number >> 8;
-            context->packet_buffer[3] = context->rtp_sequence_number;
+            packet_buffer[2] = context->rtp_sequence_number >> 8;
+            packet_buffer[3] = context->rtp_sequence_number;
             /* Timestamp */
-            context->packet_buffer[4] = context->rtp_timestamp >> 24;
-            context->packet_buffer[5] = context->rtp_timestamp >> 16;
-            context->packet_buffer[6] = context->rtp_timestamp >> 8;
-            context->packet_buffer[7] = context->rtp_timestamp;
+            packet_buffer[4] = context->rtp_timestamp >> 24;
+            packet_buffer[5] = context->rtp_timestamp >> 16;
+            packet_buffer[6] = context->rtp_timestamp >> 8;
+            packet_buffer[7] = context->rtp_timestamp;
             /* SSRC identifier */
-            context->packet_buffer[8] = context->rtp_ssrc >> 24;
-            context->packet_buffer[9] = context->rtp_ssrc >> 16;
-            context->packet_buffer[10] = context->rtp_ssrc >> 8;
-            context->packet_buffer[11] = context->rtp_ssrc;
+            packet_buffer[8] = context->rtp_ssrc >> 24;
+            packet_buffer[9] = context->rtp_ssrc >> 16;
+            packet_buffer[10] = context->rtp_ssrc >> 8;
+            packet_buffer[11] = context->rtp_ssrc;
             /* Payload */
-            memcpy(context->packet_buffer+12, context->buncher_buffer, len);
+            memcpy(packet_buffer+12, context->buncher_buffer, len);
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
-            switch_swap_linear((int16_t *)context->packet_buffer+12,len/2);
+            switch_swap_linear((int16_t *)packet_buffer+12,len/2);
 #endif
             len += 12;
-            switch_socket_send(context->socket, context->packet_buffer, &len);
+            outcome = switch_socket_send(context->socket, packet_buffer, &len);
+            context->sent_attempted++;
+            if (outcome == SWITCH_STATUS_SUCCESS) {
+                context->sent_successful++;
+            }
 
-            context->rtp_sequence_number++;
             context->rtp_timestamp += context->buncher_position;
+
+            /* Re-send the metadata every so often in case the first frame got lost */
+            if (context->sent_attempted % 16 == 0) {
+                shimaore_send_start(context);
+            }
         }
     }
     context->buncher_position = 0;
     context->buncher_frame_count = 0;
+    return outcome;
 }
 
 static switch_bool_t shimaore_unicast_bug_callback(switch_media_bug_t *bug, void *user_data, switch_abc_type_t type)
@@ -126,16 +213,16 @@ static switch_bool_t shimaore_unicast_bug_callback(switch_media_bug_t *bug, void
     case SWITCH_ABC_TYPE_INIT:
         {
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(switch_core_media_bug_get_session(bug)), SWITCH_LOG_INFO, "bug: init");
+            shimaore_send_start(context);
         }
         break;
     case SWITCH_ABC_TYPE_CLOSE:
         {
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(switch_core_media_bug_get_session(bug)), SWITCH_LOG_INFO, "bug: close");
-
             if (context->buncher_position > 0) {
                 shimaore_send(context);
             }
-
+            shimaore_send_stop(context);
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(switch_core_media_bug_get_session(bug)), SWITCH_LOG_INFO, "bug: close: attempted %ld, successful %ld", context->sent_attempted, context->sent_successful);
         }
         break;
     case SWITCH_ABC_TYPE_READ:
@@ -154,8 +241,8 @@ static switch_bool_t shimaore_unicast_bug_callback(switch_media_bug_t *bug, void
                 read_frame.buflen = SWITCH_RECOMMENDED_BUFFER_SIZE;
 
                 // switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(switch_core_media_bug_get_session(bug)), SWITCH_LOG_INFO, "bug: reading frame");
-                if (switch_core_media_bug_read(bug, &read_frame, SWITCH_TRUE) != SWITCH_STATUS_SUCCESS) {
-                    // switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(switch_core_media_bug_get_session(bug)), SWITCH_LOG_INFO, "bug: no frame");
+                if (switch_core_media_bug_read(bug, &read_frame, SWITCH_FALSE) != SWITCH_STATUS_SUCCESS) {
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(switch_core_media_bug_get_session(bug)), SWITCH_LOG_INFO, "bug: no frame");
                     return SWITCH_TRUE;
                 }
 
@@ -167,7 +254,8 @@ static switch_bool_t shimaore_unicast_bug_callback(switch_media_bug_t *bug, void
 
                 /* If we have less that the recommended size left or we already processed the proper number of frames, send out and reset. */
                 if (context->buncher_position >= SWITCH_RECOMMENDED_BUFFER_SIZE || context->buncher_frame_count >= context->buncher_maximum) {
-                    shimaore_send(context);
+                    switch_status_t outcome = shimaore_send(context);
+                    // switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(switch_core_media_bug_get_session(bug)), SWITCH_LOG_INFO, "bug: sending rtp_sequence_number=%d outcome=%d\n", context->rtp_sequence_number, outcome);
                 }
             }
         }
@@ -178,6 +266,17 @@ static switch_bool_t shimaore_unicast_bug_callback(switch_media_bug_t *bug, void
     }
 
     return SWITCH_TRUE;
+}
+
+inline uint8_t hexdigit(char c) {
+  const char hex[] = "0123456789abcdef";
+  const char *p = strchr(hex,c);
+  if (p == NULL) return 0;
+  return p-hex;
+}
+
+uint8_t hex(const char* str) {
+  return hexdigit(str[0]) << 4 | hexdigit(str[1]);
 }
 
 /* API Interface Function */
@@ -268,6 +367,7 @@ SWITCH_STANDARD_API(shimaore_unicast_api_function)
     context->rtp_ssrc = 0;
     context->rtp_sequence_number = rand();
     context->rtp_timestamp = rand();
+    context->meta_length= 0;
 
     char localhost[] = "127.0.0.1";
     char *local_ip = localhost;
@@ -299,7 +399,7 @@ SWITCH_STANDARD_API(shimaore_unicast_api_function)
             continue;
         }
         if (!strcmp(key,"local_port")) {
-            remote_port = atoi(value);
+            local_port = atoi(value);
             continue;
         }
         if (!strcmp(key,"frames_per_packet")) {
@@ -309,6 +409,13 @@ SWITCH_STANDARD_API(shimaore_unicast_api_function)
         if (!strcmp(key,"rtp_ssrc")) {
             context->framing = SHIMAORE_FRAMING_RTP_L16;
             context->rtp_ssrc = atoi(value);
+            continue;
+        }
+        if (!strcmp(key,"meta")) {
+            context->meta_length = strlen(value)/2;
+            for (int i = 0; i < context->meta_length; i ++) {
+              context->meta[i] = hex(value+i*2);
+            }
             continue;
         }
         goto usage;
@@ -420,7 +527,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_shimaore_load)
 
     SWITCH_ADD_API(api_interface, "shimaore_unicast", "unicast bug", shimaore_unicast_api_function, SHIMAORE_UNICAST_API_SYNTAX);
 
-    switch_console_set_complete("add shimaore_unicast ::console::list_uuid ::[starttop] remote_port= remote_ip= local_ip= local_port= frames_per_packet= rtp_ssrc=");
+    switch_console_set_complete("add shimaore_unicast ::console::list_uuid ::[start|stop] remote_port= remote_ip= local_ip= local_port= frames_per_packet= rtp_ssrc=");
 
     /* indicate that the module should continue to be loaded */
     return SWITCH_STATUS_SUCCESS;
@@ -430,15 +537,3 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_shimaore_shutdown)
 {
     return SWITCH_STATUS_UNLOAD;
 }
-
-
-/* For Emacs:
-* Local Variables:
-* mode:c
-* indent-tabs-mode:t
-* tab-width:4
-* c-basic-offset:4
-* End:
-* For VIM:
-* vim:set softtabstop=4 shiftwidth=4 tabstop=4 noet:
-*/
